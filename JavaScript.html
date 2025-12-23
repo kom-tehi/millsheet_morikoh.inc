@@ -1,0 +1,503 @@
+<script>
+// グローバル変数
+let currentUser = {};
+let currentFilter = {};
+let allRecords = [];
+
+// ============================================================
+// 初期化
+// ============================================================
+window.onload = function() {
+  loadUserInfo();
+  loadMasterData();
+  loadRecords();
+  initDateFields();
+};
+
+function loadUserInfo() {
+  google.script.run
+    .withSuccessHandler(function(user) {
+      currentUser = user;
+      updateUIByRole();
+    })
+    .getUserInfo();
+}
+
+function updateUIByRole() {
+  if (currentUser.role === 'viewer') {
+    document.getElementById('btnCreate').style.display = 'none';
+  }
+}
+
+function loadMasterData() {
+  google.script.run
+    .withSuccessHandler(function(options) {
+      populateSelect('diameter', options);
+      populateSelect('filterDiameter', options);
+    })
+    .getDiameterOptions();
+  
+  google.script.run
+    .withSuccessHandler(function(options) {
+      populateSelect('strength', options);
+    })
+    .getStrengthOptions();
+}
+
+function populateSelect(elementId, options) {
+  const select = document.getElementById(elementId);
+  const currentValue = select.value;
+  
+  // 既存のオプション（最初の「選択してください」等）を保持
+  const firstOption = select.options[0];
+  select.innerHTML = '';
+  select.appendChild(firstOption);
+  
+  options.forEach(opt => {
+    const option = document.createElement('option');
+    option.value = opt;
+    option.textContent = opt;
+    select.appendChild(option);
+  });
+  
+  if (currentValue) {
+    select.value = currentValue;
+  }
+}
+
+function initDateFields() {
+  const today = new Date().toISOString().split('T')[0];
+  const summaryYear = new Date().getFullYear();
+  const summaryMonth = new Date().getMonth() + 1;
+  
+  document.getElementById('summaryYear').value = summaryYear;
+  document.getElementById('summaryMonth').value = summaryMonth;
+}
+
+// ============================================================
+// データ読み込み・表示
+// ============================================================
+function loadRecords() {
+  showLoading();
+  
+  google.script.run
+    .withSuccessHandler(function(records) {
+      allRecords = records;
+      displayRecords(records);
+      hideLoading();
+    })
+    .withFailureHandler(function(error) {
+      alert('データ読み込みエラー: ' + error);
+      hideLoading();
+    })
+    .getAllRecords(currentFilter);
+}
+
+function displayRecords(records) {
+  const tbody = document.getElementById('recordTableBody');
+  tbody.innerHTML = '';
+  
+  if (records.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="11" style="text-align: center; padding: 40px; color: #999;">データがありません</td></tr>';
+    return;
+  }
+  
+  records.forEach(record => {
+    const row = tbody.insertRow();
+    
+    row.insertCell().textContent = record.arrivalDate;
+    row.insertCell().textContent = record.deliveryNo;
+    row.insertCell().textContent = record.contractNo;
+    row.insertCell().textContent = record.diameter;
+    row.insertCell().textContent = record.quantity.toFixed(3);
+    
+    // ステータス
+    const statusCell = row.insertCell();
+    const statusBadge = document.createElement('span');
+    statusBadge.className = 'status-badge ' + 
+      (record.submitStatus === 'submitted' ? 'status-submitted' : 'status-unsubmitted');
+    statusBadge.textContent = record.submitStatus === 'submitted' ? '提出済' : '未提出';
+    statusCell.appendChild(statusBadge);
+    
+    // 提出日
+    row.insertCell().textContent = record.millSentDate || '-';
+    row.insertCell().textContent = record.pdfSentDate || '-';
+    row.insertCell().textContent = record.netSentDate || '-';
+    
+    // 添付
+    const attachCell = row.insertCell();
+    if (record.attachUrl || record.attachFileId) {
+      const link = document.createElement('a');
+      link.href = record.attachUrl || `https://drive.google.com/file/d/${record.attachFileId}/view`;
+      link.target = '_blank';
+      link.textContent = '📎';
+      link.style.fontSize = '18px';
+      attachCell.appendChild(link);
+    } else {
+      attachCell.textContent = '-';
+    }
+    
+    // 操作ボタン
+    const actionCell = row.insertCell();
+    const actionGroup = document.createElement('div');
+    actionGroup.className = 'action-group';
+    
+    // 提出済ボタン
+    if (record.submitStatus === 'unsubmitted' && currentUser.role !== 'viewer') {
+      const submitBtn = document.createElement('button');
+      submitBtn.className = 'btn-success';
+      submitBtn.textContent = '✓';
+      submitBtn.title = '提出済にする';
+      submitBtn.onclick = () => markAsSubmitted(record.id);
+      actionGroup.appendChild(submitBtn);
+    }
+    
+    // 未提出に戻すボタン（管理者のみ）
+    if (record.submitStatus === 'submitted' && currentUser.role === 'admin') {
+      const unsubmitBtn = document.createElement('button');
+      unsubmitBtn.className = 'btn-warning';
+      unsubmitBtn.textContent = '↩';
+      unsubmitBtn.title = '未提出に戻す';
+      unsubmitBtn.onclick = () => markAsUnsubmitted(record.id);
+      actionGroup.appendChild(unsubmitBtn);
+    }
+    
+    // 編集ボタン
+    if (currentUser.role !== 'viewer') {
+      const editBtn = document.createElement('button');
+      editBtn.className = 'btn-info';
+      editBtn.textContent = '✎';
+      editBtn.title = '編集';
+      editBtn.onclick = () => showEditModal(record);
+      actionGroup.appendChild(editBtn);
+    }
+    
+    // 削除ボタン（管理者のみ）
+    if (currentUser.role === 'admin') {
+      const deleteBtn = document.createElement('button');
+      deleteBtn.className = 'btn-danger';
+      deleteBtn.textContent = '×';
+      deleteBtn.title = '削除';
+      deleteBtn.onclick = () => deleteRecord(record.id);
+      actionGroup.appendChild(deleteBtn);
+    }
+    
+    actionCell.appendChild(actionGroup);
+  });
+}
+
+// ============================================================
+// フィルタ
+// ============================================================
+function applyFilter() {
+  currentFilter = {
+    keyword: document.getElementById('filterKeyword').value,
+    dateFrom: document.getElementById('filterDateFrom').value,
+    dateTo: document.getElementById('filterDateTo').value,
+    diameter: document.getElementById('filterDiameter').value,
+    submitStatus: document.getElementById('filterStatus').value,
+    hasAttachment: document.getElementById('filterAttachment').value ? 
+      (document.getElementById('filterAttachment').value === 'true') : undefined
+  };
+  
+  loadRecords();
+}
+
+function clearFilter() {
+  document.getElementById('filterKeyword').value = '';
+  document.getElementById('filterDateFrom').value = '';
+  document.getElementById('filterDateTo').value = '';
+  document.getElementById('filterDiameter').value = '';
+  document.getElementById('filterStatus').value = '';
+  document.getElementById('filterAttachment').value = '';
+  
+  currentFilter = {};
+  loadRecords();
+}
+
+// ============================================================
+// モーダル操作
+// ============================================================
+function showCreateModal() {
+  document.getElementById('modalTitle').textContent = '新規登録';
+  document.getElementById('recordForm').reset();
+  document.getElementById('recordId').value = '';
+  document.getElementById('attachType').value = '';
+  toggleAttachMethod();
+  
+  // 到着日に今日をセット
+  document.getElementById('arrivalDate').value = new Date().toISOString().split('T')[0];
+  
+  document.getElementById('editModal').style.display = 'block';
+}
+
+function showEditModal(record) {
+  document.getElementById('modalTitle').textContent = '編集';
+  document.getElementById('recordId').value = record.id;
+  
+  document.getElementById('arrivalDate').value = record.arrivalDate;
+  document.getElementById('deliveryNo').value = record.deliveryNo;
+  document.getElementById('contractNo').value = record.contractNo;
+  document.getElementById('diameter').value = record.diameter;
+  document.getElementById('strength').value = record.strength || '';
+  document.getElementById('maker').value = record.maker || '';
+  document.getElementById('quantity').value = record.quantity;
+  document.getElementById('note').value = record.note || '';
+  
+  document.getElementById('millSentDate').value = record.millSentDate || '';
+  document.getElementById('tagSentDate').value = record.tagSentDate || '';
+  document.getElementById('pdfSentDate').value = record.pdfSentDate || '';
+  document.getElementById('netSentDate').value = record.netSentDate || '';
+  
+  if (record.attachUrl) {
+    document.getElementById('attachType').value = 'link';
+    document.getElementById('attachUrl').value = record.attachUrl;
+  } else if (record.attachFileId) {
+    document.getElementById('attachType').value = 'upload';
+  } else {
+    document.getElementById('attachType').value = '';
+  }
+  
+  toggleAttachMethod();
+  
+  document.getElementById('editModal').style.display = 'block';
+}
+
+function closeModal() {
+  document.getElementById('editModal').style.display = 'none';
+}
+
+function toggleAttachMethod() {
+  const type = document.getElementById('attachType').value;
+  document.getElementById('uploadArea').style.display = type === 'upload' ? 'block' : 'none';
+  document.getElementById('linkArea').style.display = type === 'link' ? 'block' : 'none';
+}
+
+// ============================================================
+// 保存
+// ============================================================
+function saveRecord() {
+  const id = document.getElementById('recordId').value;
+  const data = {
+    arrivalDate: document.getElementById('arrivalDate').value,
+    deliveryNo: document.getElementById('deliveryNo').value,
+    contractNo: document.getElementById('contractNo').value,
+    diameter: document.getElementById('diameter').value,
+    strength: document.getElementById('strength').value,
+    maker: document.getElementById('maker').value,
+    quantity: document.getElementById('quantity').value,
+    note: document.getElementById('note').value,
+    millSentDate: document.getElementById('millSentDate').value,
+    tagSentDate: document.getElementById('tagSentDate').value,
+    pdfSentDate: document.getElementById('pdfSentDate').value,
+    netSentDate: document.getElementById('netSentDate').value,
+    attachType: document.getElementById('attachType').value,
+    attachUrl: document.getElementById('attachUrl').value
+  };
+  
+  // バリデーション
+  if (!data.arrivalDate || !data.deliveryNo || !data.contractNo || 
+      !data.diameter || !data.quantity) {
+    alert('必須項目を入力してください');
+    return;
+  }
+  
+  if (parseFloat(data.quantity) <= 0) {
+    alert('数量は0より大きい値を入力してください');
+    return;
+  }
+  
+  showLoading();
+  
+  // ファイルアップロード処理
+  const attachType = document.getElementById('attachType').value;
+  if (attachType === 'upload') {
+    const fileInput = document.getElementById('attachFile');
+    if (fileInput.files.length > 0) {
+      const file = fileInput.files[0];
+      const reader = new FileReader();
+      
+      reader.onload = function(e) {
+        const base64Data = e.target.result.split(',')[1];
+        
+        google.script.run
+          .withSuccessHandler(function(result) {
+            if (result.success) {
+              data.attachFileId = result.fileId;
+              data.attachUrl = result.url;
+              saveRecordToServer(id, data);
+            } else {
+              alert('ファイルアップロードエラー: ' + result.error);
+              hideLoading();
+            }
+          })
+          .uploadAttachment(base64Data, file.name, file.type);
+      };
+      
+      reader.readAsDataURL(file);
+    } else {
+      saveRecordToServer(id, data);
+    }
+  } else {
+    saveRecordToServer(id, data);
+  }
+}
+
+function saveRecordToServer(id, data) {
+  const method = id ? 'updateRecord' : 'createRecord';
+  const args = id ? [id, data] : [data];
+  
+  google.script.run
+    .withSuccessHandler(function(result) {
+      if (result.success) {
+        closeModal();
+        loadRecords();
+        alert('保存しました');
+      } else {
+        alert('保存エラー: ' + result.error);
+      }
+      hideLoading();
+    })
+    .withFailureHandler(function(error) {
+      alert('保存エラー: ' + error);
+      hideLoading();
+    })
+    [method](...args);
+}
+
+// ============================================================
+// 削除
+// ============================================================
+function deleteRecord(id) {
+  if (!confirm('本当に削除しますか?')) {
+    return;
+  }
+  
+  showLoading();
+  
+  google.script.run
+    .withSuccessHandler(function(result) {
+      if (result.success) {
+        loadRecords();
+        alert('削除しました');
+      } else {
+        alert('削除エラー: ' + result.error);
+      }
+      hideLoading();
+    })
+    .deleteRecord(id);
+}
+
+// ============================================================
+// 提出管理
+// ============================================================
+function markAsSubmitted(id) {
+  showLoading();
+  
+  google.script.run
+    .withSuccessHandler(function(result) {
+      if (result.success) {
+        loadRecords();
+      } else {
+        alert('エラー: ' + result.error);
+      }
+      hideLoading();
+    })
+    .markAsSubmitted(id);
+}
+
+function markAsUnsubmitted(id) {
+  if (!confirm('未提出に戻しますか?')) {
+    return;
+  }
+  
+  showLoading();
+  
+  google.script.run
+    .withSuccessHandler(function(result) {
+      if (result.success) {
+        loadRecords();
+      } else {
+        alert('エラー: ' + result.error);
+      }
+      hideLoading();
+    })
+    .markAsUnsubmitted(id);
+}
+
+// ============================================================
+// CSV出力
+// ============================================================
+function exportCSV() {
+  showLoading();
+  
+  google.script.run
+    .withSuccessHandler(function(csv) {
+      downloadCSV(csv, 'millsheet_list.csv');
+      hideLoading();
+    })
+    .exportToCSV(currentFilter);
+}
+
+function showMonthlySummary() {
+  document.getElementById('summaryModal').style.display = 'block';
+}
+
+function closeSummaryModal() {
+  document.getElementById('summaryModal').style.display = 'none';
+}
+
+function downloadMonthlySummary() {
+  const year = document.getElementById('summaryYear').value;
+  const month = document.getElementById('summaryMonth').value;
+  
+  showLoading();
+  
+  google.script.run
+    .withSuccessHandler(function(csv) {
+      downloadCSV(csv, `millsheet_summary_${year}${month.padStart(2, '0')}.csv`);
+      hideLoading();
+      closeSummaryModal();
+    })
+    .exportMonthlySummary(parseInt(year), parseInt(month));
+}
+
+function downloadCSV(csv, filename) {
+  const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+  const blob = new Blob([bom, csv], { type: 'text/csv;charset=utf-8;' });
+  const link = document.createElement('a');
+  const url = URL.createObjectURL(blob);
+  
+  link.setAttribute('href', url);
+  link.setAttribute('download', filename);
+  link.style.display = 'none';
+  
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
+// ============================================================
+// UI ヘルパー
+// ============================================================
+function showLoading() {
+  document.getElementById('loading').style.display = 'block';
+}
+
+function hideLoading() {
+  document.getElementById('loading').style.display = 'none';
+}
+
+// モーダル外クリックで閉じる
+window.onclick = function(event) {
+  const editModal = document.getElementById('editModal');
+  const summaryModal = document.getElementById('summaryModal');
+  
+  if (event.target === editModal) {
+    closeModal();
+  }
+  if (event.target === summaryModal) {
+    closeSummaryModal();
+  }
+}
+</script>

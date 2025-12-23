@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <?!= include('Stylesheet'); ?>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>📋 ミルシート一覧アプリ</h1>
+      <div class="user-info">
+        <span id="userEmail"><?= userEmail ?></span>
+        <span class="role-badge" id="userRole"><?= userRole ?></span>
+      </div>
+    </header>
+
+    <!-- 検索・フィルタエリア -->
+    <div class="filter-section">
+      <div class="filter-row">
+        <input type="text" id="filterKeyword" placeholder="検索（納品書番号/契約番号/メモ）">
+        
+        <input type="date" id="filterDateFrom" placeholder="到着日From">
+        <input type="date" id="filterDateTo" placeholder="到着日To">
+        
+        <select id="filterDiameter">
+          <option value="">径（全て）</option>
+        </select>
+        
+        <select id="filterStatus">
+          <option value="">ステータス（全て）</option>
+          <option value="unsubmitted">未提出</option>
+          <option value="submitted">提出済</option>
+        </select>
+        
+        <select id="filterAttachment">
+          <option value="">添付（全て）</option>
+          <option value="true">あり</option>
+          <option value="false">なし</option>
+        </select>
+        
+        <button onclick="applyFilter()" class="btn-primary">🔍 検索</button>
+        <button onclick="clearFilter()" class="btn-secondary">クリア</button>
+      </div>
+    </div>
+
+    <!-- アクションボタン -->
+    <div class="action-buttons">
+      <button onclick="showCreateModal()" class="btn-primary" id="btnCreate">➕ 新規登録</button>
+      <button onclick="exportCSV()" class="btn-secondary">📥 CSV出力</button>
+      <button onclick="showMonthlySummary()" class="btn-secondary">📊 月次集計</button>
+      <button onclick="loadRecords()" class="btn-secondary">🔄 更新</button>
+    </div>
+
+    <!-- データテーブル -->
+    <div class="table-container">
+      <table id="recordTable">
+        <thead>
+          <tr>
+            <th>到着日</th>
+            <th>納品書番号</th>
+            <th>契約番号</th>
+            <th>径</th>
+            <th>数量(t)</th>
+            <th>ステータス</th>
+            <th>ミル送付</th>
+            <th>PDF送付</th>
+            <th>NET登録</th>
+            <th>添付</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="recordTableBody">
+          <tr>
+            <td colspan="11" style="text-align: center; padding: 40px;">
+              読み込み中...
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- 登録/編集モーダル -->
+  <div id="editModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 id="modalTitle">新規登録</h2>
+        <span class="close" onclick="closeModal()">&times;</span>
+      </div>
+      
+      <form id="recordForm" onsubmit="return false;">
+        <input type="hidden" id="recordId">
+        
+        <div class="form-row">
+          <div class="form-group">
+            <label>到着日 <span class="required">*</span></label>
+            <input type="date" id="arrivalDate" required>
+          </div>
+          
+          <div class="form-group">
+            <label>納品書番号 <span class="required">*</span></label>
+            <input type="text" id="deliveryNo" required>
+          </div>
+        </div>
+        
+        <div class="form-row">
+          <div class="form-group">
+            <label>契約番号 <span class="required">*</span></label>
+            <input type="text" id="contractNo" required>
+          </div>
+          
+          <div class="form-group">
+            <label>径 <span class="required">*</span></label>
+            <select id="diameter" required>
+              <option value="">選択してください</option>
+            </select>
+          </div>
+        </div>
+        
+        <div class="form-row">
+          <div class="form-group">
+            <label>数量(t) <span class="required">*</span></label>
+            <input type="number" id="quantity" step="0.001" min="0.001" required>
+          </div>
+          
+          <div class="form-group">
+            <label>強度</label>
+            <select id="strength">
+              <option value="">選択してください</option>
+            </select>
+          </div>
+        </div>
+        
+        <div class="form-group">
+          <label>メーカー</label>
+          <input type="text" id="maker">
+        </div>
+        
+        <div class="form-group">
+          <label>メモ</label>
+          <textarea id="note" rows="2"></textarea>
+        </div>
+        
+        <div class="form-section-title">📎 添付ファイル</div>
+        
+        <div class="form-group">
+          <label>添付方法</label>
+          <select id="attachType" onchange="toggleAttachMethod()">
+            <option value="">なし</option>
+            <option value="upload">ファイルアップロード</option>
+            <option value="link">URL入力</option>
+          </select>
+        </div>
+        
+        <div class="form-group" id="uploadArea" style="display: none;">
+          <label>ファイル選択</label>
+          <input type="file" id="attachFile" accept=".pdf,image/*">
+        </div>
+        
+        <div class="form-group" id="linkArea" style="display: none;">
+          <label>URL</label>
+          <input type="url" id="attachUrl">
+        </div>
+        
+        <div class="form-section-title">📤 提出情報</div>
+        
+        <div class="form-row">
+          <div class="form-group">
+            <label>ミル送付日</label>
+            <input type="date" id="millSentDate">
+          </div>
+          
+          <div class="form-group">
+            <label>タグ送付日</label>
+            <input type="date" id="tagSentDate">
+          </div>
+        </div>
+        
+        <div class="form-row">
+          <div class="form-group">
+            <label>PDF送付日</label>
+            <input type="date" id="pdfSentDate">
+          </div>
+          
+          <div class="form-group">
+            <label>NET登録日</label>
+            <input type="date" id="netSentDate">
+          </div>
+        </div>
+        
+        <div class="modal-footer">
+          <button type="button" onclick="closeModal()" class="btn-secondary">キャンセル</button>
+          <button type="submit" onclick="saveRecord()" class="btn-primary" id="btnSave">保存</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 月次集計モーダル -->
+  <div id="summaryModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>月次集計</h2>
+        <span class="close" onclick="closeSummaryModal()">&times;</span>
+      </div>
+      
+      <div class="form-row">
+        <div class="form-group">
+          <label>年</label>
+          <input type="number" id="summaryYear" min="2020" max="2099">
+        </div>
+        
+        <div class="form-group">
+          <label>月</label>
+          <select id="summaryMonth">
+            <option value="1">1月</option>
+            <option value="2">2月</option>
+            <option value="3">3月</option>
+            <option value="4">4月</option>
+            <option value="5">5月</option>
+            <option value="6">6月</option>
+            <option value="7">7月</option>
+            <option value="8">8月</option>
+            <option value="9">9月</option>
+            <option value="10">10月</option>
+            <option value="11">11月</option>
+            <option value="12">12月</option>
+          </select>
+        </div>
+        
+        <button onclick="downloadMonthlySummary()" class="btn-primary">📥 CSV出力</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="loading" class="loading">処理中...</div>
+
+  <?!= include('JavaScript'); ?>
+</body>
+</html>
